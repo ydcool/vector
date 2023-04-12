@@ -1,0 +1,110 @@
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      git_ref:
+        type: string
+        required: true
+        # channel is the dir/namespace packages are organized into.
+        # Options are release/nightly/custom.
+      channel:
+        type: string
+        required: true
+env:
+  VERBOSE: true
+  CI: true
+  DISABLE_MOLD: true
+  DEBIAN_FRONTEND: noninteractive
+  CONTAINER_TOOL: docker
+  CARGO_PROFILE_RELEASE_LTO: fat
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+  # observing issues fetching boringssl via HTTPS in the OSX build, seeing if this helps
+  # can be removed when we switch back to the upstream openssl-sys crate
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  CHANNEL: ${{ inputs.channel }}
+
+jobs:
+  generate-publish-metadata:
+    name: Generate Publish-related Metadata
+    runs-on: ubuntu-20.04
+    outputs:
+      vector_version: ${{ steps.generate-publish-metadata.outputs.vector_version }}
+      vector_build_desc: ${{ steps.generate-publish-metadata.outputs.vector_build_desc }}
+      vector_release_channel: ${{ steps.generate-publish-metadata.outputs.vector_release_channel }}
+      vector_cloudsmith_repo: ${{ steps.generate-publish-metadata.outputs.vector_cloudsmith_repo }}
+    steps:
+      - name: Checkout Vector
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.git_ref }}
+      - name: Generate publish metadata
+        id: generate-publish-metadata
+        run: make ci-generate-publish-metadata
+  build-aarch64-unknown-linux-musl-packages:
+    name: Build Vector for aarch64-unknown-linux-musl (.tar.gz)
+    runs-on: [linux, release-builder]
+    needs: generate-publish-metadata
+    env:
+      VECTOR_VERSION: ${{ needs.generate-publish-metadata.outputs.vector_version }}
+      VECTOR_BUILD_DESC: ${{ needs.generate-publish-metadata.outputs.vector_build_desc }}
+      CHANNEL: ${{ needs.generate-publish-metadata.outputs.vector_release_channel }}
+    steps:
+      - name: Checkout Vector
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.git_ref }}
+      - name: Bootstrap runner environment (Ubuntu-specific)
+        run: sudo -E bash scripts/environment/bootstrap-ubuntu-20.04.sh
+      - name: Bootstrap runner environment (generic)
+        run: bash scripts/environment/prepare.sh
+      - name: Build Vector
+        env:
+          DOCKER_PRIVILEGED: "true"
+        run: make package-aarch64-unknown-linux-musl-all
+      - name: Stage package artifacts for publish
+        uses: actions/upload-artifact@v3
+        with:
+          name: vector-${{ env.VECTOR_VERSION }}-aarch64-unknown-linux-musl
+          path: target/artifacts/vector*
+  publish-docker:
+    needs:
+      - generate-publish-metadata
+      - build-aarch64-unknown-linux-musl-packages
+    env:
+      VECTOR_VERSION: ${{ needs.generate-publish-metadata.outputs.vector_version }}
+    steps:
+      - name: Checkout Vector
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.git_ref }}
+      - name: Login to DockerHub
+        uses: docker/login-action@v2.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_USERNAME }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2.1.0
+        with:
+          platforms: all
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2.5.0
+        with:
+          version: latest
+          install: true
+      - name: Download staged package artifacts (aarch64-unknown-linux-musl)
+        uses: actions/download-artifact@v3
+        with:
+          name: vector-${{ env.VECTOR_VERSION }}-aarch64-unknown-linux-musl
+          path: target/artifacts
+      - name: Build and push
+        id: docker_push
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/vector-arm64:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/vector-arm64:v0.26.0
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
