@@ -57,7 +57,7 @@ jobs:
       - name: Build Vector
         env:
           DOCKER_PRIVILEGED: "true"
-        run: make package-aarch64-unknown-linux-musl-all
+        run: JEMALLOC_CONFIGURE_OPTS="--with-lg-page=16" make package-aarch64-unknown-linux-musl-all
       - name: Stage package artifacts for publish
         uses: actions/upload-artifact@v3
         with:
