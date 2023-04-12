@@ -1,16 +1,11 @@
 name: Publish
 
 on:
-  workflow_call:
-    inputs:
-      git_ref:
-        type: string
-        required: true
-        # channel is the dir/namespace packages are organized into.
-        # Options are release/nightly/custom.
-      channel:
-        type: string
-        required: true
+  push:
+    branches: [dev-0.26.0]
+  pull_request:
+    branches: [main]
+
 env:
   VERBOSE: true
   CI: true
